@@ -11,20 +11,105 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
-```{r cars}
-summary(cars)
+```{r initialization echo=FALSE}
+library(stringi)
+library(e1071)
+library(rpart)
+library(rpart.plot)
+library(maptree)
+library(ggmap)
+library(ggplot2)
+library(reshape)
+source("C:/Users/David/Documents/College2/cst463/HW/lin-regr-util.R")
+source("C:/Users/David/Documents/College2/cst463/HW/class-util.R")
+
+# initialize delay data
+# https://www.transtats.bts.gov/OT_Delay/OT_DelayCause1.asp?pn=1
+# 2015-2017
+fulldat = read.csv("C:/Users/David/Documents/College2/cst463/Project/airline_delay_causes_15_17.csv")
+
+#clean feature names
+colnames(fulldat)[2] = "month"
+colnames(fulldat)[10] = "weather_ct"
+colnames(fulldat)[16] = "arr_delay"
+colnames(fulldat)[17] = "carrier_delay"
+fulldat$X=NULL
+#remove NA values
+fulldat = fulldat[complete.cases(fulldat),]
+#Add delayed time per arrived flight
+delay_to_arrive = fulldat$arr_delay/fulldat$arr_flights
+fulldat["delay_to_arrive"] = delay_to_arrive
+#create test and training data sets
+dat = fulldat[fulldat$year==2016,]
+testdat = fulldat[fulldat$year==2015,]
+
+# initialize airport location data
+# https://www.faa.gov/airports/planning_capacity/passenger_allcargo_stats/addresses/
+# Public use Airports
+ports = read.csv("C:/Users/David/Documents/College2/cst463/Project/public-use-airports-2015.csv")
+
+
 ```
 
 ## Including Plots
 
 You can also embed plots, for example:
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r Data_Exploration, echo=FALSE}
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+```{r Data_tree, echo=FALSE}
+fit2 = rpart(formula = delay_to_arrive ~ carrier+airport+month, data = dat, maxdepth = 4)
+prp(fit2, extra=1,varlen=-10, main="Datatree")
+
+predicted = predict(fit2, newdata = testdat)
+errors = testdat$delay_to_arrive - predicted
+rmse = sqrt(mean(errors^2))
+
+plot_predict_actual(predicted = predicted, actual = testdat$delay_to_arrive, 1, "Decision Tree Predictions")
+
+rmse
+
+```
+
+
+
+```{r Cluster_Analysis, echo=FALSE}
+#setup map data
+map<-get_map(location='united states', zoom=4, maptype = "terrain",
+             source='google',color='color')
+
+#Cluster Analysis of Weather Delays
+dathc = dat
+dathc[,c("year","month","carrier_name","airport_name")] = NULL
+melted = melt(dathc, id=c("airport","carrier"))
+casted = cast(melted, airport~variable, sum)
+
+matches = match(casted$airport, ports$Arpt.Locid)
+casted["latitude"] = as.numeric(stri_extract_first_regex(as.character(ports[matches,]$ARPLatitude), "[0-9]+"))
+casted["longitude"] = as.numeric(stri_extract_first_regex(as.character(ports[matches,]$ARPLongitude), "[0-9]+"))
+
+labs = casted[,"airport"]
+weather = data.frame(casted$weather_delay/casted$arr_flights, casted$nas_delay/casted$arr_flights)
+
+scaled = scale(weather)
+hc = hclust(dist(scaled), method = "complete")
+hc$labels = labs
+
+clusters = cutree(hc, 10)
+newdata=casted
+newdata = newdata[complete.cases(newdata),]
+matches = match(newdata$airport, hc$labels)
+newdata["clusters"] = as.factor(clusters[matches])
+
+p = ggmap(map)
+library = data.frame(long=newdata$longitude, lat=newdata$latitude)
+p = p + geom_point(data=library, aes(x=-long,y=lat), color=newdata$clusters, size=2)
+p
+
+```
